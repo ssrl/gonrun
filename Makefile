@@ -1,7 +1,7 @@
 include $(GOROOT)/src/Make.inc
 
-TARG=gorun
+TARG=gonrun
 
-GOFILES=gorun.go
+GOFILES=gonrun.go
 
 include $(GOROOT)/src/Make.cmd
