@@ -127,10 +127,10 @@ func Compile(sourcefile, runfile string) (err os.Error) {
 	}
 
 	bindir := filepath.Join(runtime.GOROOT(), "bin")
-    gd := filepath.Join(bindir, "gd")
+    gd := filepath.Join(bindir, "mgd")
     if _, err := os.Stat(gd); err != nil {
-        if gd, err = exec.LookPath("gd"); err != nil {
-            return os.ErrorString("can't find gd")
+        if gd, err = exec.LookPath("mgd"); err != nil {
+            return os.ErrorString("can't find mgd")
         }
     }
     err = Exec([]string{gd, "-L","_obj",".","-q","-o",runfile})
