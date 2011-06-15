@@ -37,13 +37,18 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	useGd := false
+	if os.Args[1] == "-gd" {		
+		args = os.Args[2:]
+		useGd = true
+	}
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mogorun <source file> [...]")
+		fmt.Fprintln(os.Stderr, "usage: gonrun <source file> [...]")
 		os.Exit(1)
 	}
 
-	err := Run(args)
+	err := Run(args, useGd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: "+err.String())
 		os.Exit(1)
@@ -54,7 +59,7 @@ func main() {
 
 // Run compiles and links the Go source file on args[0] and
 // runs it with arguments args[1:].
-func Run(args []string) os.Error {
+func Run(args []string, useGd bool) os.Error {
 	sourcefile := args[0]
 	rundir, runfile, err := RunFile(sourcefile)
 	if err != nil {
@@ -90,22 +95,40 @@ func Run(args []string) os.Error {
 
 	for retry := 3; retry > 0; retry-- {
 		if compile {
-			err := Compile(sourcefile, runfile)
-			if err != nil {
-				return err
+			ec := Compile(sourcefile, runfile, useGd)
+			if ec != nil {
+				return ec
 			}
 			// If sourcefile was changed, will be updated on next run.
 			os.Chtimes(runfile, sstat.Mtime_ns, sstat.Mtime_ns)
 		}
 
-		err = os.Exec(runfile, args, os.Environ())
-		if perr, ok := err.(*os.PathError); ok && perr.Error == os.ENOENT {
+		if os.Getenv("GOOS") == "windows" {
+			attr := &os.ProcAttr{Env: os.Environ(), Files: []*os.File{os.Stdin, os.Stdout, os.Stderr}}
+			p, err := os.StartProcess(runfile, args, attr)
+			if err != nil {
+				panic(err)
+			} else {
+				_,_ = p.Wait(0)
+				p.Release()
+				os.Exit(0)
+			}
+		} else {
+			err = os.Exec(runfile, args, os.Environ())
+		}
+		
+		eNoEntError := os.ENOENT
+		if os.Getenv("GOOS") == "windows" {
+			eNoEntError = os.NewError("The system cannot find the path specified.")
+		}
+		if perr, ok := err.(*os.PathError); ok && perr.Error.String() == eNoEntError.String() {
 			// Got cleaned up under our feet.
 			compile = true
 			continue
 		}
 		break
 	}
+
 	if err != nil {
 		panic("exec returned but succeeded")
 	}
@@ -114,7 +137,8 @@ func Run(args []string) os.Error {
 
 // Compile compiles and links sourcefile and atomically renames the
 // resulting binary to runfile.
-func Compile(sourcefile, runfile string) (err os.Error) {
+func Compile(sourcefile, runfile string, useGd bool) (err os.Error) {
+	
 	pid := strconv.Itoa(os.Getpid())
 
 	content, err := ioutil.ReadFile(sourcefile)
@@ -127,46 +151,49 @@ func Compile(sourcefile, runfile string) (err os.Error) {
 	}
 
 	bindir := filepath.Join(runtime.GOROOT(), "bin")
-    gd := filepath.Join(bindir, "mgd")
-    if _, err := os.Stat(gd); err != nil {
-        if gd, err = exec.LookPath("mgd"); err != nil {
-            return os.ErrorString("can't find mgd")
-        }
-    }
-    err = Exec([]string{gd, "-L","_obj",".","-q","-o",runfile})
-    return err
-    /*
-	n := TheChar()
-	gc := filepath.Join(bindir, n+"g")
-	ld := filepath.Join(bindir, n+"l")
-	if _, err := os.Stat(gc); err != nil {
-		if gc, err = exec.LookPath(n + "g"); err != nil {
-			return os.ErrorString("can't find " + n + "g")
+    if useGd {
+    	gd := filepath.Join(bindir, "mgd")
+    	if _, err := os.Stat(gd); err != nil {
+        	if gd, err = exec.LookPath("mgd"); err != nil {
+            	return os.ErrorString("can't find mgd")
+        	}
+    	}    	
+    	err = Exec([]string{gd, "-L","_obj",".","-q","-o",runfile})
+    	return err
+	} else {
+		n := TheChar()
+		gc := filepath.Join(bindir, n+"g")
+		ld := filepath.Join(bindir, n+"l")
+		if _, err := os.Stat(gc); err != nil {
+			if gc, err = exec.LookPath(n + "g"); err != nil {
+				return os.ErrorString("can't find " + n + "g")
+			}
 		}
-	}
-	if _, err := os.Stat(ld); err != nil {
-		if ld, err = exec.LookPath(n + "l"); err != nil {
-			return os.ErrorString("can't find " + n + "l")
+		if _, err := os.Stat(ld); err != nil {
+			if ld, err = exec.LookPath(n + "l"); err != nil {
+				return os.ErrorString("can't find " + n + "l")
+			}
 		}
+		gcout := runfile + "." + pid + "." + n
+		ldout := runfile + "." + pid
+		err = Exec([]string{gc, "-o", gcout, sourcefile})
+		if err != nil {
+			return err
+		}
+		defer os.Remove(gcout)
+		err = Exec([]string{ld, "-o", ldout, gcout})
+		if err != nil {
+			return err
+		}
+		return os.Rename(ldout, runfile)
 	}
-	gcout := runfile + "." + pid + "." + n
-	ldout := runfile + "." + pid
-	err = Exec([]string{gc, "-o", gcout, sourcefile})
-	if err != nil {
-		return err
-	}
-	defer os.Remove(gcout)
-	err = Exec([]string{ld, "-o", ldout, gcout})
-	if err != nil {
-		return err
-	}
-	return os.Rename(ldout, runfile)
-    */
+	panic("Unreachable code")
 }
 
 // Exec runs args[0] with args[1:] arguments and passes through
 // stdout and stderr.
 func Exec(args []string) os.Error {
+	
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -185,6 +212,7 @@ func Exec(args []string) os.Error {
 // for sourcefile should be put.  In case the directory does not yet exist, it
 // will be created by RunDir.
 func RunFile(sourcefile string) (rundir, runfile string, err os.Error) {
+	
 	rundir, err = RunDir()
 	if err != nil {
 		return "", "", err
@@ -198,7 +226,13 @@ func RunFile(sourcefile string) (rundir, runfile string, err os.Error) {
 		return "", "", err
 	}
 	runfile = strings.Replace(sourcefile, "%", "%%", -1)
-	runfile = strings.Replace(runfile, string(filepath.Separator), "%", -1)
+	if os.Getenv("GOOS") != "windows" {
+		runfile = strings.Replace(runfile, string(filepath.Separator), "%", -1)
+		runfile = runfile
+	} else {
+		runfile = strings.Replace(runfile, string(filepath.Separator), "_", -1)
+		runfile = strings.Replace(runfile, ":", "_", -1)
+	}
 	runfile = filepath.Join(rundir, runfile)
 	return rundir, runfile, nil
 }
@@ -211,6 +245,7 @@ func canWrite(stat *os.FileInfo, euid, egid int) bool {
 // RunDir returns the directory where binary files generates should be put.
 // In case a safe directory isn't found, one will be created.
 func RunDir() (rundir string, err os.Error) {
+
 	tempdir := os.TempDir()
 	euid := os.Geteuid()
 	stat, err := os.Stat(tempdir)
@@ -225,7 +260,7 @@ func RunDir() (rundir string, err os.Error) {
 	suffix := runtime.GOOS + "_" + runtime.GOARCH
 	prefixi := prefix
 	var i uint
-	for {
+	for {		
 		rundir = filepath.Join(tempdir, prefixi, suffix)
 
 		// A directory is only considered safe if the owner matches the
@@ -235,7 +270,11 @@ func RunDir() (rundir string, err os.Error) {
 		if err == nil && stat.IsDirectory() && stat.Permission() == 0700 && stat.Uid == euid {
 			return rundir, nil
 		}
-		if perr, ok := err.(*os.PathError); ok && perr.Error == os.ENOENT {
+		eNoEntError := os.ENOENT
+		if os.Getenv("GOOS") == "windows" {
+			eNoEntError = os.NewError("The system cannot find the path specified.")
+		}
+		if perr, ok := err.(*os.PathError); ok && perr.Error.String() == eNoEntError.String() {
 			err := os.MkdirAll(rundir, 0700)
 			if err == nil {
 				return rundir, nil
